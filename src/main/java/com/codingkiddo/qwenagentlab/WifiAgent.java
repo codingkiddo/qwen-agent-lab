@@ -1,3 +1,5 @@
+package com.codingkiddo.qwenagentlab;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -42,37 +44,54 @@ public class WifiAgent {
          *
          * It only returns a structured request.
          */
-        String decisionPrompt = """
-                You are a Wi-Fi support AI agent.
+    	String decisionPrompt = """
+    	        You are a Wi-Fi support AI agent.
 
-                You have access to this tool:
+    	        You have access to these tools:
 
-                getWifiTelemetry(deviceId)
+    	        1. getDevice(deviceId)
+    	           Returns device information.
 
-                Tool description:
-                Returns current Wi-Fi radio and connectivity
-                telemetry for the specified device.
+    	        2. getWifiTelemetry(deviceId)
+    	           Returns Wi-Fi radio and connectivity telemetry.
 
-                Customer question:
+    	        3. getQoEScore(deviceId)
+    	           Returns the device QoE score.
 
-                %s
+    	        4. getSecurityRisk(deviceId)
+    	           Returns security risk information.
 
-                Decide what information is required.
+    	        Customer question:
 
-                If Wi-Fi telemetry is required,
-                return ONLY valid JSON in this format:
+    	        %s
 
-                {
-                  "action": "GET_WIFI_TELEMETRY",
-                  "deviceId": "<device id>"
-                }
+    	        Decide what action is required next.
 
-                Do not answer the customer's question yet.
+    	        Return ONLY valid JSON.
 
-                Do not add markdown.
-                Do not add explanation.
-                Return only JSON.
-                """.formatted(customerQuestion);
+    	        For a tool call:
+
+    	        {
+    	          "action": "GET_WIFI_TELEMETRY",
+    	          "deviceId": "device-123",
+    	          "answer": null
+    	        }
+
+    	        Valid actions are:
+
+    	        GET_DEVICE
+    	        GET_WIFI_TELEMETRY
+    	        GET_QOE_SCORE
+    	        GET_SECURITY_RISK
+    	        FINAL_ANSWER
+
+    	        If you have enough information to answer,
+    	        use FINAL_ANSWER and place the answer
+    	        in the answer field.
+
+    	        Do not add markdown.
+    	        Do not add explanation outside the JSON.
+    	        """.formatted(customerQuestion);
 
         System.out.println(
                 "========================================"
@@ -110,53 +129,40 @@ public class WifiAgent {
          *
          * Java parses Qwen's decision.
          */
-        JsonNode decisionJson =
-                objectMapper.readTree(decision);
+//        JsonNode decisionJson =
+//                objectMapper.readTree(decision);
+//
+//        JsonNode actionNode =
+//                decisionJson.get("action");
+//
+//        if (actionNode == null) {
+//            throw new IllegalStateException(
+//                    "Qwen did not return an action"
+//            );
+//        }
+        
+        AgentDecision agentDecision =
+                objectMapper.readValue(
+                        decision,
+                        AgentDecision.class
+                );
 
-        JsonNode actionNode =
-                decisionJson.get("action");
+        AgentAction action =
+                agentDecision.action();
 
-        if (actionNode == null) {
+        String deviceId =
+                agentDecision.deviceId();
+
+        if (deviceId == null || deviceId.isBlank()) {
             throw new IllegalStateException(
-                    "Qwen did not return an action"
+                    "Qwen did not return deviceId"
             );
         }
 
-        String action =
-                actionNode.asText();
+        if (action == AgentAction.GET_WIFI_TELEMETRY) {
 
-        /*
-         * STEP 3
-         *
-         * The Java application decides whether
-         * this action is allowed.
-         *
-         * This is very important.
-         *
-         * LLM REQUESTS the action.
-         * Java CONTROLS execution.
-         */
-        if ("GET_WIFI_TELEMETRY".equals(action)) {
-
-            JsonNode deviceIdNode =
-                    decisionJson.get("deviceId");
-
-            if (deviceIdNode == null) {
-                throw new IllegalStateException(
-                        "Qwen did not return deviceId"
-                );
-            }
-
-            String deviceId =
-                    deviceIdNode.asText();
-
-            /*
-             * STEP 4
-             *
-             * Execute the actual Java tool.
-             */
             String telemetry =
-                    getWifiTelemetry(deviceId);
+                    WifiTools.getWifiTelemetry(deviceId);
 
             System.out.println();
             System.out.println(
@@ -171,12 +177,6 @@ public class WifiAgent {
 
             System.out.println(telemetry);
 
-            /*
-             * STEP 5
-             *
-             * Give the actual tool result
-             * back to Qwen3.
-             */
             String finalPrompt = """
                     You are a Wi-Fi troubleshooting assistant.
 
@@ -191,7 +191,9 @@ public class WifiAgent {
 
                     Use ONLY the telemetry above.
 
-                    Do not invent additional measurements.
+                    Do not invent additional measurements,
+                    threshold values, normal ranges,
+                    or industry standards.
 
                     Explain:
 
@@ -207,11 +209,6 @@ public class WifiAgent {
                     telemetry
             );
 
-            /*
-             * STEP 6
-             *
-             * Qwen3 now reasons using actual telemetry.
-             */
             String finalAnswer =
                     askQwenText(finalPrompt);
 
@@ -230,12 +227,6 @@ public class WifiAgent {
 
         } else {
 
-            /*
-             * Fail closed.
-             *
-             * We do not execute random actions suggested
-             * by the LLM.
-             */
             throw new IllegalStateException(
                     "Unsupported tool action: " + action
             );
@@ -360,38 +351,50 @@ public class WifiAgent {
     static String askQwenJson(String prompt)
             throws Exception {
 
-        Map<String, Object> properties = Map.of(
-                "action", Map.of(
-                        "type", "string",
-                        "enum", new String[]{
-                                "GET_WIFI_TELEMETRY"
-                        }
-                ),
-                "deviceId", Map.of(
-                        "type", "string"
-                )
-        );
+        Map<String, Object> properties =
+                Map.of(
+                        "action", Map.of(
+                                "type", "string",
+                                "enum", new String[]{
+                                        "GET_DEVICE",
+                                        "GET_WIFI_TELEMETRY",
+                                        "GET_QOE_SCORE",
+                                        "GET_SECURITY_RISK",
+                                        "FINAL_ANSWER"
+                                }
+                        ),
 
-        Map<String, Object> jsonSchema = Map.of(
-                "type", "object",
-                "properties", properties,
-                "required", new String[]{
-                        "action",
-                        "deviceId"
-                },
-                "additionalProperties", false
-        );
+                        "deviceId", Map.of(
+                                "type", "string"
+                        ),
+
+                        "answer", Map.of(
+                                "type",
+                                new String[]{
+                                        "string",
+                                        "null"
+                                }
+                        )
+                );
+
+        Map<String, Object> jsonSchema =
+                Map.of(
+                        "type", "object",
+                        "properties", properties,
+                        "required", new String[]{
+                                "action",
+                                "deviceId",
+                                "answer"
+                        },
+                        "additionalProperties", false
+                );
 
         Map<String, Object> requestBody =
                 Map.of(
                         "model", MODEL,
                         "prompt", prompt,
                         "stream", false,
-
-                        // Important for Qwen3 in this lab
                         "think", false,
-
-                        // Force the expected structure
                         "format", jsonSchema
                 );
 
@@ -437,11 +440,6 @@ public class WifiAgent {
 
         validateHttpResponse(response);
 
-        /*
-         * VERY IMPORTANT WHILE LEARNING:
-         *
-         * Show the complete HTTP response from Ollama.
-         */
         System.out.println();
         System.out.println(
                 ">>> RAW OLLAMA RESPONSE"
